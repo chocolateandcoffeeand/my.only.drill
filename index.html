@@ -110,6 +110,10 @@
     background:linear-gradient(100deg, #FFFFFF 20%, var(--mint) 60%, var(--accent) 100%);
     -webkit-background-clip:text; background-clip:text; color:transparent;
   }
+  :root[data-theme="light"] h1.hero{
+    background:linear-gradient(100deg, #6B4CFF 0%, #0FAF93 55%, #A855F7 100%);
+    -webkit-background-clip:text; background-clip:text; color:transparent;
+  }
   h2.title{font-family:var(--font-display); font-weight:700; font-size:22px; margin:0 0 6px; color:var(--text);}
   p.sub{color:var(--text-dim); font-size:14.5px; margin:0 0 20px;}
 
@@ -1183,7 +1187,7 @@ function renderSettings(){
       <div style="font-weight:700; margin-bottom:12px;">🎨 テーマ</div>
       <div class="chip-group" style="margin-bottom:0;">
         <div class="chip ${theme==='dark'?'selected':''}" onclick="setTheme('dark')">🌙 ダーク</div>
-        <div class="chip ${theme==='light'?'selected':''}" onclick="setTheme('light')">☀️ ライト（Y2K）</div>
+        <div class="chip ${theme==='light'?'selected':''}" onclick="setTheme('light')">☀️ ライト</div>
       </div>
     </div>
 
