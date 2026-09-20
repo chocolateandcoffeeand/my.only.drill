@@ -549,8 +549,9 @@ Notebookに登録された資料をもとに、
 ・今日やるべき「今日のミッション」の内容
 ・重点的にやるべき「苦手克服」の内容
 ・短時間でできる「サクッと5分」向けの内容
-を分析し、以下のJSON形式のみで出力してください。説明文や前置きは一切不要です。
-テスト名を指定した場合は、そのままJSONの"testName"に使ってください。
+を分析してください。
+さらに、「今日のミッション」で決めた単元について、そのまま6〜10問の練習問題も作ってください。Notebookに登録済みの資料（目次・テスト・解答）だけで十分な場合はすぐに問題を作り、教科書やワークの該当ページがまだ登録されていない場合は、無理に作らず、必要なページ範囲だけを needsScan に書いてください（questionsは空配列にする）。
+以下のJSON形式のみで出力してください。説明文や前置きは一切不要です。テスト名を指定した場合は、そのままJSONの"testName"に使ってください。
 
 {
   "diagnosis": {
@@ -562,14 +563,33 @@ Notebookに登録された資料をもとに、
       {"subject": "string", "unit": "string"}
     ],
     "recommendedPlan": {
-      "todayMission": {"subject": "string", "unit": "string", "format": "choice", "count": 5},
+      "todayMission": {"subject": "string", "unit": "string", "format": "choice", "count": 8},
       "weakFocus": {"subject": "string", "unit": "string", "format": "choice", "count": 8},
       "quick5min": {"subject": "string", "unit": "string", "format": "true_false", "count": 3}
+    },
+    "todayQuestions": {
+      "mode": "choice",
+      "needsScan": [{"material": "string", "pages": "string"}],
+      "questions": [
+        {
+          "id": "string",
+          "type": "choice",
+          "question": "string",
+          "choices": ["string","string","string","string"],
+          "answer": 0,
+          "explanation": "string"
+        }
+      ]
     }
   }
 }
 
-formatは "choice"（4択）・"true_false"（○×）・"fill_blank"（穴埋め）のいずれかにしてください。`;
+formatとmodeは "choice"（4択）・"true_false"（○×）・"fill_blank"（穴埋め）のいずれかにしてください。`;
+}
+
+function buildContinuePrompt(){
+  return `リクエストされたページを、Notebookに追加しました。
+先ほどと同じJSON形式（diagnosisオブジェクト全体）で、今度は todayQuestions.questions も埋めて、もう一度出力してください。説明文や前置きは不要です。`;
 }
 
 /* ---------------- JSON parsing ---------------- */
@@ -1119,7 +1139,27 @@ function loadPasted(){
     db.diagnosis = obj.diagnosis;
     db.diagnosis.updatedAt = new Date().toISOString();
     if(Array.isArray(obj.diagnosis.enemies)) registerEnemiesFromDiagnosis(obj.diagnosis.enemies);
+
+    const today = obj.diagnosis.recommendedPlan.todayMission;
+    const tq = obj.diagnosis.todayQuestions;
     saveData(db);
+
+    if(tq && Array.isArray(tq.questions) && tq.questions.length > 0 && today){
+      state.parsed = {subject: today.subject, unit: today.unit, mode: tq.mode || today.format, questions: tq.questions};
+      state.currentEnemyId = ensureEnemy(today.subject, today.unit);
+      state.reviewMode = false;
+      state.quiz = {index:0, correct:0, answered:false, lastChoice:null, missed:[]};
+      saveData(db);
+      showToast("診断完了！今日のミッションを始めるよ");
+      goto("quiz");
+      return;
+    }
+    if(tq && Array.isArray(tq.needsScan) && tq.needsScan.length > 0){
+      state.parsed = {subject:(today&&today.subject)||"", unit:(today&&today.unit)||"", questions:[], needsScan: tq.needsScan};
+      showToast("診断は完了。あと少しだけ資料が必要みたい");
+      goto("needsScan");
+      return;
+    }
     showToast("診断が完了したよ！新しい敵が見つかったよ");
     goto("home");
     return;
@@ -1150,15 +1190,27 @@ function showPasteError(){
 /* ---------------- needs scan ---------------- */
 function renderNeedsScan(){
   const items = state.parsed.needsScan || [];
+  const isDiag = state.flow === "diagnosis";
+  const continueBlock = isDiag ? `
+    <div class="code-card">
+      <span class="tag">続きのメッセージ</span>
+      <pre>${escapeHtml(buildContinuePrompt())}</pre>
+    </div>
+    <button class="btn btn-mint" style="margin-bottom:12px;" onclick="copyText(buildContinuePrompt(), '続きのメッセージをコピーしたよ')">コピーする</button>
+    <p class="sub" style="margin-bottom:16px;">スキャンした写真を、さっきと同じGeminiの会話に追加してから、このメッセージを貼り付けてね（新しいチャットは開かないでね）。</p>
+    <button class="btn btn-primary" onclick="goto('paste')">貼り付け画面へ →</button>
+  ` : `
+    <button class="btn btn-primary" style="margin-top:8px;" onclick="goto('prompt')">プロンプト画面へ戻る</button>
+  `;
   return `
     <h2 class="title">先にスキャンが必要みたい</h2>
-    <p class="sub">下のページをスキャンしてNotebookに追加してから、もう一度Geminiに聞いてね。</p>
+    <p class="sub">下のページをスキャンしてNotebookに追加してから、続けてね。</p>
     ${items.map(it=>`
       <div class="needs-scan-item">
         <div class="m">${escapeHtml(it.material || "資料")}</div>
         <div class="p">${escapeHtml(it.pages || "")}</div>
       </div>`).join("")}
-    <button class="btn btn-primary" style="margin-top:8px;" onclick="goto('prompt')">プロンプト画面へ戻る</button>
+    ${continueBlock}
   `;
 }
 
