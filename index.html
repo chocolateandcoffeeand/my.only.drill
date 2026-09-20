@@ -306,6 +306,7 @@ function loadData(){
       player: p.player || {exp:0, tokens:0, defeatedCount:0},
       miniGames: p.miniGames || {invader:{unlocked:false, bestScore:0}},
       profile: p.profile || {nextTestDate:"", secondChoiceDate:"", firstChoiceDate:"", birthday:""},
+      questionBank: p.questionBank || {},
     };
   }catch(e){ return defaultData(); }
 }
@@ -315,6 +316,7 @@ function defaultData(){
     enemies:{}, player:{exp:0, tokens:0, defeatedCount:0},
     miniGames:{invader:{unlocked:false, bestScore:0}},
     profile:{nextTestDate:"", secondChoiceDate:"", firstChoiceDate:"", birthday:""},
+    questionBank:{},
   };
 }
 function saveData(data){ localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); }
@@ -369,19 +371,29 @@ function expProgress(exp){
   return {lvl, cur, next, pct};
 }
 
-function ensureEnemy(subject, unit){
+function ensureEnemy(subject, unit, order){
   const k = unitKey(subject, unit);
-  if(!db.enemies[k]) db.enemies[k] = {subject, unit, state:"WEAK", history:[], createdAt:new Date().toISOString()};
+  if(!db.enemies[k]){
+    db.enemies[k] = {subject, unit, state:"WEAK", history:[], createdAt:new Date().toISOString(), order:(typeof order==="number")?order:999};
+  } else if(typeof order === "number"){
+    db.enemies[k].order = order;
+  }
   return k;
 }
 function registerEnemiesFromDiagnosis(list){
-  (list||[]).forEach(en=>{ if(en && en.subject && en.unit) ensureEnemy(en.subject, en.unit); });
+  (list||[]).forEach(en=>{ if(en && en.subject && en.unit) ensureEnemy(en.subject, en.unit, en.order); });
   saveData(db);
 }
 function activeEnemies(){
   return Object.entries(db.enemies)
     .filter(([id,e])=>e.state !== "DEFEATED")
     .map(([id,e])=>Object.assign({id}, e));
+}
+function earliestActiveEnemyInSubject(subject){
+  const candidates = activeEnemies().filter(e=>e.subject === subject);
+  if(!candidates.length) return null;
+  candidates.sort((a,b)=>(a.order ?? 999) - (b.order ?? 999));
+  return candidates[0];
 }
 function enemyAccuracyLabel(e){
   if(!e.history || e.history.length === 0) return "未挑戦";
@@ -417,6 +429,52 @@ function recordEnemyAttempt(enemyId, correct){
   }
   saveData(db);
   return {defeated, subject:e.subject, unit:e.unit};
+}
+
+/* ---------------- question bank (bulk-generated questions per enemy) ---------------- */
+function mergeIntoBank(enemyId, subject, unit, mode, questions){
+  if(!Array.isArray(questions) || questions.length === 0) return 0;
+  if(!db.questionBank[enemyId]) db.questionBank[enemyId] = {subject, unit, mode: mode||"choice", questions:[]};
+  const bank = db.questionBank[enemyId];
+  const existingTexts = new Set(bank.questions.map(q=>q.question));
+  let added = 0;
+  questions.forEach(q=>{
+    if(q && q.question && !existingTexts.has(q.question)){
+      bank.questions.push(Object.assign({}, q, {stats:{attempts:0, correct:0, lastAnsweredAt:0}}));
+      existingTexts.add(q.question);
+      added++;
+    }
+  });
+  saveData(db);
+  return added;
+}
+function bankCountFor(subject, unit){
+  const b = db.questionBank[unitKey(subject, unit)];
+  return b ? b.questions.length : 0;
+}
+function drawFromBank(enemyId, count){
+  const bank = db.questionBank[enemyId];
+  if(!bank || !bank.questions.length) return null;
+  const pool = bank.questions.map((q, idx)=>({q, idx}));
+  pool.sort((a,b)=>{
+    const as = a.q.stats || {attempts:0, lastAnsweredAt:0};
+    const bs = b.q.stats || {attempts:0, lastAnsweredAt:0};
+    if(as.attempts !== bs.attempts) return as.attempts - bs.attempts;
+    return (as.lastAnsweredAt||0) - (bs.lastAnsweredAt||0);
+  });
+  const picked = pool.slice(0, Math.min(count, pool.length));
+  for(let i=picked.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); const t=picked[i]; picked[i]=picked[j]; picked[j]=t; }
+  return picked.map(p=>Object.assign({}, p.q, {_bankKey: enemyId, _bankIdx: p.idx}));
+}
+function recordBankAnswer(bankKey, bankIdx, correct){
+  const bank = db.questionBank[bankKey];
+  if(!bank || !bank.questions[bankIdx]) return;
+  const q = bank.questions[bankIdx];
+  if(!q.stats) q.stats = {attempts:0, correct:0, lastAnsweredAt:0};
+  q.stats.attempts++;
+  if(correct) q.stats.correct++;
+  q.stats.lastAnsweredAt = Date.now();
+  saveData(db);
 }
 
 /* ---------------- app state ---------------- */
@@ -562,51 +620,56 @@ ${infoBlock}${noteBlock}
 【依頼内容】
 Notebookに登録された資料をもとに、
 ・どの教科のどの単元が苦手か（＝「敵」のリスト。教科名と単元名だけでよく、正答率の推定は不要）
+・それぞれの単元が、同じ教科の中で通常何番目に習う内容か（order：1から始まる整数、小さいほど先に習う単元。積み重ねが重要な教科では特に正確にしてください）
 ・得意な単元
-・今日やるべき「今日のミッション」の内容
-・重点的にやるべき「苦手克服」の内容
-・短時間でできる「サクッと5分」向けの内容
+・今日優先すべき「今日のミッション」の単元
+・特に重点的にやるべき「苦手克服」の単元
 を分析してください。
-さらに、「今日のミッション」で決めた単元について、そのまま6〜10問の練習問題も作ってください。Notebookに登録済みの資料（目次・テスト・解答）だけで十分な場合はすぐに問題を作り、教科書やワークの該当ページがまだ登録されていない場合は、無理に作らず、必要なページ範囲だけを needsScan に書いてください（questionsは空配列にする）。
+
+さらに重要な作業として、見つかった苦手単元**それぞれについて**、練習問題を15〜20問ずつ、まとめて作ってください（1単元だけでなく、見つかった苦手単元の数だけ繰り返してください）。Notebookに登録済みの資料（目次・テスト・解答、および過去に登録した教科書・ワークのページ）だけで十分な単元はすぐに問題を作り、教科書やワークの該当ページがまだ登録されていない単元は、無理に作らず、その単元の questions を空配列にして needsScan に必要なページ範囲を書いてください（他の単元の生成は止めずに続けてください）。
+
 以下のJSON形式のみで出力してください。説明文や前置きは一切不要です。テスト名を指定した場合は、そのままJSONの"testName"に使ってください。
 
 {
   "diagnosis": {
     "testName": "string",
     "enemies": [
-      {"subject": "string", "unit": "string"}
+      {"subject": "string", "unit": "string", "order": 1}
     ],
     "strongUnits": [
       {"subject": "string", "unit": "string"}
     ],
     "recommendedPlan": {
-      "todayMission": {"subject": "string", "unit": "string", "format": "choice", "count": 8},
-      "weakFocus": {"subject": "string", "unit": "string", "format": "choice", "count": 8},
-      "quick5min": {"subject": "string", "unit": "string", "format": "true_false", "count": 3}
+      "todayMission": {"subject": "string", "unit": "string"},
+      "weakFocus": {"subject": "string", "unit": "string"}
     },
-    "todayQuestions": {
-      "mode": "choice",
-      "needsScan": [{"material": "string", "pages": "string"}],
-      "questions": [
-        {
-          "id": "string",
-          "type": "choice",
-          "question": "string",
-          "choices": ["string","string","string","string"],
-          "answer": 0,
-          "explanation": "string"
-        }
-      ]
-    }
+    "questionBank": [
+      {
+        "subject": "string",
+        "unit": "string",
+        "mode": "choice",
+        "needsScan": [{"material": "string", "pages": "string"}],
+        "questions": [
+          {
+            "id": "string",
+            "type": "choice",
+            "question": "string",
+            "choices": ["string","string","string","string"],
+            "answer": 0,
+            "explanation": "string"
+          }
+        ]
+      }
+    ]
   }
 }
 
-formatとmodeは "choice"（4択）・"true_false"（○×）・"fill_blank"（穴埋め）のいずれかにしてください。`;
+questionBankには、見つかった苦手単元1つにつき1オブジェクトを入れてください。modeとtypeは "choice"（4択）・"true_false"（○×）・"fill_blank"（穴埋め）のいずれかにしてください。`;
 }
 
 function buildContinuePrompt(){
   return `リクエストされたページを、Notebookに追加しました。
-先ほどと同じJSON形式（diagnosisオブジェクト全体）で、今度は todayQuestions.questions も埋めて、もう一度出力してください。説明文や前置きは不要です。`;
+先ほどと同じJSON形式（diagnosisオブジェクト全体）で、questionBankの各単元のquestionsも埋めて、もう一度出力してください。説明文や前置きは不要です。`;
 }
 
 /* ---------------- JSON parsing ---------------- */
@@ -701,7 +764,9 @@ function renderScreen(){
 /* ---------------- home ---------------- */
 function renderHome(){
   const d = db.diagnosis;
-  const today = d && d.recommendedPlan && d.recommendedPlan.todayMission;
+  const todayPlan = d && d.recommendedPlan && d.recommendedPlan.todayMission;
+  const todayEarliest = todayPlan ? earliestActiveEnemyInSubject(todayPlan.subject) : null;
+  const today = todayPlan ? {subject: todayPlan.subject, unit: (todayEarliest ? todayEarliest.unit : todayPlan.unit)} : null;
   const weak = (d && d.recommendedPlan && d.recommendedPlan.weakFocus) || (d && d.weakUnits && d.weakUnits[0]);
   const quickCount = db.missedBank.length;
 
@@ -739,7 +804,7 @@ function renderHome(){
           <div class="icon">👾</div>
           <div class="body">
             <div class="name">${escapeHtml(e.subject)}｜${escapeHtml(e.unit)}</div>
-            <div class="acc">${enemyAccuracyLabel(e)}</div>
+            <div class="acc">${enemyAccuracyLabel(e)}${bankCountFor(e.subject,e.unit)>0 ? " ・ 📦"+bankCountFor(e.subject,e.unit)+"問" : ""}</div>
           </div>
           <div class="state-tag">${e.state === "TRAINING" ? "TRAINING" : "WEAK"}</div>
         </div>`).join("")}
@@ -783,14 +848,14 @@ function renderHome(){
       <div class="icon" style="background:var(--accent-soft); color:var(--accent);">🎯</div>
       <div class="body">
         <div class="m-title">今日のミッション</div>
-        <div class="m-sub">${today ? escapeHtml(today.subject+"・"+today.unit) : "診断するとおすすめが出るよ"}</div>
+        <div class="m-sub">${today ? escapeHtml(today.subject+"・"+today.unit) + (bankCountFor(today.subject,today.unit)>0 ? `（${bankCountFor(today.subject,today.unit)}問ストック）` : "") : "診断するとおすすめが出るよ"}</div>
       </div>
     </div>
     <div class="mission-card ${!weak?'disabled':''}" onclick="startMission('weak')">
       <div class="icon" style="background:var(--warn-soft); color:var(--warn);">🔥</div>
       <div class="body">
         <div class="m-title">苦手克服</div>
-        <div class="m-sub">${weak ? escapeHtml(weak.subject+"・"+weak.unit) : "診断するとおすすめが出るよ"}</div>
+        <div class="m-sub">${weak ? escapeHtml(weak.subject+"・"+weak.unit) + (bankCountFor(weak.subject,weak.unit)>0 ? `（${bankCountFor(weak.subject,weak.unit)}問ストック）` : "") : "診断するとおすすめが出るよ"}</div>
       </div>
     </div>
     <div class="mission-card ${quickCount===0?'disabled':''}" onclick="startMission('quick')">
@@ -852,9 +917,25 @@ function startMission(key){
   const plan = key === "today" ? (d.recommendedPlan && d.recommendedPlan.todayMission)
                                 : (d.recommendedPlan && d.recommendedPlan.weakFocus);
   if(!plan){ showToast("おすすめが見つからなかった…自分で選んでみて"); openCreate("manual"); return; }
+  let targetSubject = plan.subject, targetUnit = plan.unit;
+  if(key === "today"){
+    const earliest = earliestActiveEnemyInSubject(plan.subject);
+    if(earliest){ targetUnit = earliest.unit; }
+  }
+  const enemyId = ensureEnemy(targetSubject, targetUnit);
+  const bankQuestions = drawFromBank(enemyId, 8);
+  if(bankQuestions && bankQuestions.length > 0){
+    state.reviewMode = false;
+    state.currentEnemyId = enemyId;
+    state.parsed = {subject: targetSubject, unit: targetUnit, questions: bankQuestions};
+    state.flow = "quiz";
+    state.quiz = {index:0, correct:0, answered:false, lastChoice:null, missed:[]};
+    goto("quiz");
+    return;
+  }
   state.reviewMode = false;
-  state.currentEnemyId = null;
-  state.form = {subject:plan.subject, unit:plan.unit, format:plan.format||"choice", count:plan.count||5};
+  state.currentEnemyId = enemyId;
+  state.form = {subject:targetSubject, unit:targetUnit, format:"choice", count:8};
   const li = levelInfoFor(state.form.subject, state.form.unit);
   state.promptText = buildPrompt(state.form, li);
   state.flow = "quiz";
@@ -875,9 +956,19 @@ function startReviewQuiz(){
 function startEnemyDrill(enemyId){
   const e = db.enemies[enemyId];
   if(!e) return;
+  const bankQuestions = drawFromBank(enemyId, 8);
+  if(bankQuestions && bankQuestions.length > 0){
+    state.reviewMode = false;
+    state.currentEnemyId = enemyId;
+    state.parsed = {subject: e.subject, unit: e.unit, questions: bankQuestions};
+    state.flow = "quiz";
+    state.quiz = {index:0, correct:0, answered:false, lastChoice:null, missed:[]};
+    goto("quiz");
+    return;
+  }
   state.reviewMode = false;
   state.currentEnemyId = enemyId;
-  state.form = {subject:e.subject, unit:e.unit, format:"choice", count:5};
+  state.form = {subject:e.subject, unit:e.unit, format:"choice", count:8};
   const li = levelInfoFor(e.subject, e.unit);
   state.promptText = buildPrompt(state.form, li);
   state.flow = "quiz";
@@ -1340,32 +1431,40 @@ function loadPasted(){
   const obj = extractJson(raw);
 
   if(state.flow === "diagnosis"){
-    if(!obj || !obj.diagnosis || !obj.diagnosis.recommendedPlan){ showPasteError(); return; }
-    db.diagnosis = obj.diagnosis;
+    if(!obj || !obj.diagnosis){ showPasteError(); return; }
+    const diag = obj.diagnosis;
+    db.diagnosis = diag;
     db.diagnosis.updatedAt = new Date().toISOString();
-    if(Array.isArray(obj.diagnosis.enemies)) registerEnemiesFromDiagnosis(obj.diagnosis.enemies);
+    if(Array.isArray(diag.enemies)) registerEnemiesFromDiagnosis(diag.enemies);
 
-    const today = obj.diagnosis.recommendedPlan.todayMission;
-    const tq = obj.diagnosis.todayQuestions;
+    const bankList = Array.isArray(diag.questionBank) ? diag.questionBank : [];
+    let addedCount = 0;
+    let pendingScans = [];
+    bankList.forEach(entry=>{
+      if(!entry || !entry.subject || !entry.unit) return;
+      const eid = ensureEnemy(entry.subject, entry.unit);
+      if(Array.isArray(entry.questions) && entry.questions.length > 0){
+        addedCount += mergeIntoBank(eid, entry.subject, entry.unit, entry.mode, entry.questions);
+      }
+      if(Array.isArray(entry.needsScan) && entry.needsScan.length > 0){
+        entry.needsScan.forEach(ns=>{
+          pendingScans.push(Object.assign({subject: entry.subject, unit: entry.unit}, ns));
+        });
+      }
+    });
     saveData(db);
 
-    if(tq && Array.isArray(tq.questions) && tq.questions.length > 0 && today){
-      state.parsed = {subject: today.subject, unit: today.unit, mode: tq.mode || today.format, questions: tq.questions};
-      state.currentEnemyId = ensureEnemy(today.subject, today.unit);
-      state.reviewMode = false;
-      state.quiz = {index:0, correct:0, answered:false, lastChoice:null, missed:[]};
-      saveData(db);
-      showToast("診断完了！今日のミッションを始めるよ");
-      goto("quiz");
-      return;
-    }
-    if(tq && Array.isArray(tq.needsScan) && tq.needsScan.length > 0){
-      state.parsed = {subject:(today&&today.subject)||"", unit:(today&&today.unit)||"", questions:[], needsScan: tq.needsScan};
-      showToast("診断は完了。あと少しだけ資料が必要みたい");
+    if(pendingScans.length > 0){
+      state.parsed = {subject:"", unit:"", questions:[], needsScan: pendingScans};
+      showToast(addedCount > 0 ? addedCount + "問できたよ。あと少しだけ資料が必要な単元もあるみたい" : "診断は完了。あと少しだけ資料が必要みたい");
       goto("needsScan");
       return;
     }
-    showToast("診断が完了したよ！新しい敵が見つかったよ");
+    if(addedCount > 0){
+      showToast(addedCount + "問の問題ができたよ！");
+    } else {
+      showToast("診断が完了したよ！新しい敵が見つかったよ");
+    }
     goto("home");
     return;
   }
@@ -1374,6 +1473,7 @@ function loadPasted(){
   state.parsed = obj;
   if((!obj.questions || obj.questions.length===0) && obj.needsScan && obj.needsScan.length>0){ goto("needsScan"); return; }
   if(!obj.questions || obj.questions.length===0){ showPasteError(); return; }
+  if(state.currentEnemyId){ mergeIntoBank(state.currentEnemyId, obj.subject, obj.unit, obj.mode, obj.questions); }
   state.reviewMode = false;
   state.quiz = {index:0, correct:0, answered:false, lastChoice:null, missed:[]};
   goto("quiz");
@@ -1413,7 +1513,7 @@ function renderNeedsScan(){
     ${items.map(it=>`
       <div class="needs-scan-item">
         <div class="m">${escapeHtml(it.material || "資料")}</div>
-        <div class="p">${escapeHtml(it.pages || "")}</div>
+        <div class="p">${it.subject && it.unit ? escapeHtml(it.subject+"｜"+it.unit+"：") : ""}${escapeHtml(it.pages || "")}</div>
       </div>`).join("")}
     ${continueBlock}
   `;
@@ -1479,7 +1579,10 @@ function renderQuiz(){
   `;
 }
 
-function handleEnemyProgress(correct){
+function handleEnemyProgress(q, correct){
+  if(q && q._bankKey !== undefined && q._bankIdx !== undefined){
+    recordBankAnswer(q._bankKey, q._bankIdx, correct);
+  }
   if(!state.currentEnemyId) return;
   const res = recordEnemyAttempt(state.currentEnemyId, correct);
   if(res.defeated){ state.enemyJustDefeated = {subject: res.subject, unit: res.unit}; }
@@ -1497,7 +1600,7 @@ function answerChoice(i){
     if(!state.reviewMode) addToMissedBank(state.parsed.subject, state.parsed.unit, q);
   }
   if(!state.reviewMode) recordAttempt(state.parsed.subject, state.parsed.unit, correct);
-  handleEnemyProgress(correct);
+  handleEnemyProgress(q, correct);
   render();
 }
 function answerTF(val){
@@ -1514,7 +1617,7 @@ function answerTF(val){
     if(!state.reviewMode) addToMissedBank(state.parsed.subject, state.parsed.unit, q);
   }
   if(!state.reviewMode) recordAttempt(state.parsed.subject, state.parsed.unit, correct);
-  handleEnemyProgress(correct);
+  handleEnemyProgress(q, correct);
   render();
 }
 function answerFill(){
@@ -1531,7 +1634,7 @@ function answerFill(){
     if(!state.reviewMode) addToMissedBank(state.parsed.subject, state.parsed.unit, q);
   }
   if(!state.reviewMode) recordAttempt(state.parsed.subject, state.parsed.unit, correct);
-  handleEnemyProgress(correct);
+  handleEnemyProgress(q, correct);
   render();
 }
 function nextQuestion(){
