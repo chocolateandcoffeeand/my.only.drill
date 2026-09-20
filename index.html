@@ -64,10 +64,11 @@
 
   .topbar{display:flex; flex-direction:column; align-items:stretch; gap:10px; margin-bottom:28px;}
   .banner{width:100%; border-radius:var(--radius-lg); display:block; cursor:pointer; box-shadow:0 10px 30px rgba(0,0,0,0.35);}
+  .nav-row{display:flex; justify-content:space-between; align-items:center;}
   .home-link{
     font-size:13px; color:var(--text-dim); text-decoration:none;
     padding:6px 12px; border-radius:999px; border:1px solid var(--border);
-    align-self:flex-end;
+    cursor:pointer;
   }
   .home-link:active{background:var(--surface);}
 
@@ -294,6 +295,7 @@ function loadData(){
       enemies: p.enemies || {},
       player: p.player || {exp:0, tokens:0, defeatedCount:0},
       miniGames: p.miniGames || {invader:{unlocked:false, bestScore:0}},
+      profile: p.profile || {nextTestDate:"", secondChoiceDate:"", firstChoiceDate:"", birthday:""},
     };
   }catch(e){ return defaultData(); }
 }
@@ -302,6 +304,7 @@ function defaultData(){
     unitStats:{}, sessions:[], diagnosis:null, missedBank:[],
     enemies:{}, player:{exp:0, tokens:0, defeatedCount:0},
     miniGames:{invader:{unlocked:false, bestScore:0}},
+    profile:{nextTestDate:"", secondChoiceDate:"", firstChoiceDate:"", birthday:""},
   };
 }
 function saveData(data){ localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); }
@@ -421,6 +424,8 @@ let state = {
   reviewMode: false,
   currentEnemyId: null,
   enemyJustDefeated: null,
+  newEnemySubject: "",
+  newEnemyUnit: "",
   quiz: { index: 0, correct: 0, answered: false, lastChoice: null, missed: [] },
 };
 
@@ -624,7 +629,10 @@ function render(){
   let html = `
     <div class="topbar">
       <img class="banner" src="${BANNER_DATA_URI}" alt="My Only Drill" onclick="goto('home')">
-      ${state.screen !== "home" ? `<a class="home-link" onclick="goto('home')">ホームへ</a>` : ""}
+      <div class="nav-row">
+        <a class="home-link" onclick="goto('settings')">⚙ 設定</a>
+        ${state.screen !== "home" ? `<a class="home-link" onclick="goto('home')">ホームへ</a>` : ""}
+      </div>
     </div>
   `;
 
@@ -653,6 +661,7 @@ function renderScreen(){
     case "needsScan": return renderNeedsScan();
     case "guide": return renderGuide();
     case "minigame": return renderMiniGame();
+    case "settings": return renderSettings();
     case "quiz": return renderQuiz();
     case "result": return renderResult();
     default: return renderHome();
@@ -667,6 +676,7 @@ function renderHome(){
   const quickCount = db.missedBank.length;
 
   const prog = expProgress(db.player.exp);
+  const examDays = db.profile && db.profile.firstChoiceDate ? daysUntil(db.profile.firstChoiceDate) : null;
   const statusHtml = `
     <div class="status-card">
       <div class="status-top">
@@ -678,8 +688,15 @@ function renderHome(){
         <span>👾 DEFEATED ${db.player.defeatedCount||0}</span>
         <span>🪙 TOKEN ×${db.player.tokens||0}</span>
       </div>
+      ${examDays !== null ? `<div class="status-sub" style="margin-top:8px;">🎯 第一志望まで あと${examDays}日</div>` : ""}
     </div>
   `;
+  const birthdayHtml = isBirthdayToday() ? `
+    <div class="callout" style="text-align:center; border-color:var(--mint);">
+      <div class="c-title">🎂 お誕生日おめでとう！</div>
+      <div class="c-sub" style="margin-bottom:0;">今日は特別な日。今日のミッションもきっとクリアできるよ。</div>
+    </div>
+  ` : "";
 
   const enemies = activeEnemies();
   const defeatedTotal = db.player.defeatedCount || 0;
@@ -779,6 +796,7 @@ function renderHome(){
   return `
     <h1 class="hero">今日は、<br>どこを伸ばす？</h1>
     <p class="sub">ミッションをタップするだけで、すぐ問題に取り組めるよ。</p>
+    ${birthdayHtml}
     ${statusHtml}
     ${calloutHtml}
     ${missionsHtml}
@@ -959,6 +977,154 @@ function renderGuide(){
 
     <button class="btn btn-primary" onclick="openCreate('diagnosis')">診断画面に戻る →</button>
   `;
+}
+
+/* ---------------- settings ---------------- */
+function renderSettings(){
+  const p = db.profile;
+  const enemyRows = Object.entries(db.enemies);
+  return `
+    <h2 class="title">設定</h2>
+    <p class="sub">データはこの端末のブラウザだけに保存されています。</p>
+
+    <div class="card" style="margin-bottom:14px;">
+      <div style="font-weight:700; margin-bottom:6px;">💾 データのバックアップ</div>
+      <p class="sub" style="margin-bottom:14px;">端末を変えたり、うっかり消してしまった時のために、データをファイルに書き出しておけます。</p>
+      <div class="btn-row">
+        <button class="btn btn-mint" onclick="exportData()">書き出す</button>
+        <button class="btn btn-ghost" onclick="triggerImport()">読み込む</button>
+      </div>
+      <input type="file" id="importFileInput" accept="application/json" style="display:none;" onchange="handleImportFile(this)">
+    </div>
+
+    <div class="card" style="margin-bottom:14px;">
+      <div style="font-weight:700; margin-bottom:12px;">📅 大事な日程（任意）</div>
+      <label class="field-label">次のテスト</label>
+      <input type="date" value="${escapeAttr(p.nextTestDate)}" onchange="updateProfileField('nextTestDate', this.value)" style="margin-bottom:14px;">
+      <label class="field-label">第二志望 本番</label>
+      <input type="date" value="${escapeAttr(p.secondChoiceDate)}" onchange="updateProfileField('secondChoiceDate', this.value)" style="margin-bottom:14px;">
+      <label class="field-label">第一志望 本番</label>
+      <input type="date" value="${escapeAttr(p.firstChoiceDate)}" onchange="updateProfileField('firstChoiceDate', this.value)" style="margin-bottom:14px;">
+      <label class="field-label">誕生日</label>
+      <input type="date" value="${escapeAttr(p.birthday)}" onchange="updateProfileField('birthday', this.value)">
+    </div>
+
+    <div class="card" style="margin-bottom:14px;">
+      <div style="font-weight:700; margin-bottom:12px;">👾 敵を管理する</div>
+      ${enemyRows.length ? enemyRows.map(([id,e])=>`
+        <div class="enemy-row" style="cursor:default; margin-bottom:8px;">
+          <div class="icon">👾</div>
+          <div class="body">
+            <div class="name">${escapeHtml(e.subject)}｜${escapeHtml(e.unit)}</div>
+            <div class="acc">${escapeHtml(e.state)}</div>
+          </div>
+          <button class="btn btn-ghost btn-small" onclick="deleteEnemy('${id}')">削除</button>
+        </div>`).join("") : `<p class="sub" style="margin-bottom:14px;">まだ敵が登録されていないよ</p>`}
+
+      <label class="field-label" style="margin-top:10px;">新しい敵を追加</label>
+      <div class="chip-group">
+        ${SUBJECTS.map(s=>`<div class="chip ${state.newEnemySubject===s?'selected':''}" onclick="setNewEnemySubject('${s}')">${s}</div>`).join("")}
+      </div>
+      <input type="text" id="newEnemyUnit" placeholder="単元名（例：比較級）" value="${escapeAttr(state.newEnemyUnit)}" oninput="state.newEnemyUnit=this.value" style="margin-bottom:12px;">
+      <button class="btn btn-ghost" onclick="addManualEnemy()">敵を追加する</button>
+    </div>
+
+    <div class="card" style="margin-bottom:14px;">
+      <div style="font-weight:700; margin-bottom:6px;">👾 敵の全リセット</div>
+      <p class="sub" style="margin-bottom:14px;">登録した敵をまとめて全部削除します。レベルや学習履歴は残ります。</p>
+      <button class="btn btn-ghost" onclick="resetEnemies()">敵を全部リセットする</button>
+    </div>
+
+    <div class="card" style="border-color:var(--warn);">
+      <div style="font-weight:700; margin-bottom:6px; color:var(--warn);">⚠ 全データ削除</div>
+      <p class="sub" style="margin-bottom:14px;">敵・レベル・学習履歴・診断結果など、すべてのデータを削除します。元に戻せません。</p>
+      <button class="btn btn-ghost" style="border-color:var(--warn); color:var(--warn);" onclick="resetAllData()">全データを削除する</button>
+    </div>
+  `;
+}
+function updateProfileField(key, value){
+  db.profile[key] = value;
+  saveData(db);
+}
+function daysUntil(dateStr){
+  if(!dateStr) return null;
+  const target = new Date(dateStr + "T00:00:00");
+  const now = new Date();
+  now.setHours(0,0,0,0);
+  return Math.ceil((target - now) / (1000*60*60*24));
+}
+function isBirthdayToday(){
+  if(!db.profile.birthday) return false;
+  const b = new Date(db.profile.birthday + "T00:00:00");
+  const now = new Date();
+  return b.getMonth() === now.getMonth() && b.getDate() === now.getDate();
+}
+function exportData(){
+  const dataStr = JSON.stringify(db, null, 2);
+  const blob = new Blob([dataStr], {type:"application/json"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "my-only-drill-backup-" + new Date().toISOString().slice(0,10) + ".json";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  showToast("バックアップを書き出したよ");
+}
+function triggerImport(){
+  const el = document.getElementById("importFileInput");
+  if(el) el.click();
+}
+function handleImportFile(input){
+  const file = input.files && input.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = function(e){
+    try{
+      const parsed = JSON.parse(e.target.result);
+      if(!window.confirm("今のデータを、読み込んだバックアップで上書きするよ。よろしい？")){ input.value = ""; return; }
+      db = Object.assign(defaultData(), parsed);
+      saveData(db);
+      showToast("バックアップを読み込んだよ");
+      goto("home");
+    }catch(err){
+      showToast("読み込めなかった…ファイルが壊れているかも");
+    }
+    input.value = "";
+  };
+  reader.readAsText(file);
+}
+function deleteEnemy(id){
+  if(!window.confirm("この敵を削除するよ。よろしい？")) return;
+  delete db.enemies[id];
+  saveData(db);
+  render();
+}
+function setNewEnemySubject(s){ state.newEnemySubject = s; render(); }
+function addManualEnemy(){
+  const unit = (document.getElementById("newEnemyUnit").value || "").trim();
+  if(!state.newEnemySubject){ showToast("教科を選んでね"); return; }
+  if(!unit){ showToast("単元名を入れてね"); return; }
+  ensureEnemy(state.newEnemySubject, unit);
+  saveData(db);
+  state.newEnemyUnit = "";
+  showToast("敵を追加したよ");
+  render();
+}
+function resetEnemies(){
+  if(!window.confirm("登録した敵（苦手単元）を全部リセットするよ。よろしい？")) return;
+  db.enemies = {};
+  saveData(db);
+  showToast("敵をリセットしたよ");
+  render();
+}
+function resetAllData(){
+  if(!window.confirm("学習履歴・レベル・敵の記録など、全部のデータを削除するよ。元に戻せないけど本当にいい？")) return;
+  db = defaultData();
+  saveData(db);
+  showToast("全部のデータを削除したよ");
+  goto("home");
 }
 
 /* ---------------- mini game: retro invader ---------------- */
