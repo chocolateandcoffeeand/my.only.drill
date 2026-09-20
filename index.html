@@ -166,6 +166,16 @@
     color:#CFC9F0; max-height:260px; overflow-y:auto;
   }
 
+  .modal-overlay{
+    position:fixed; inset:0; background:rgba(6,5,14,0.72); z-index:100;
+    display:flex; align-items:center; justify-content:center; padding:24px;
+  }
+  .modal-card{
+    background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-lg);
+    padding:24px; max-width:440px; width:100%; max-height:80vh; overflow-y:auto;
+  }
+  .modal-card h3{margin:0 0 12px; font-family:var(--font-display); font-weight:700; font-size:17px;}
+
   #toast{
     position:fixed; left:50%; bottom:26px; transform:translateX(-50%) translateY(20px);
     background:var(--mint); color:#08281F; font-weight:700; font-size:14px;
@@ -426,6 +436,8 @@ let state = {
   enemyJustDefeated: null,
   newEnemySubject: "",
   newEnemyUnit: "",
+  modal: null,
+  dateSectionOpen: false,
   quiz: { index: 0, correct: 0, answered: false, lastChoice: null, missed: [] },
 };
 
@@ -649,7 +661,25 @@ function render(){
   }
 
   html += `<main>${renderScreen()}</main>`;
+  if(state.modal) html += renderModal();
   app.innerHTML = html;
+}
+
+function openModal(name){ state.modal = name; render(); }
+function closeModal(){ state.modal = null; render(); }
+function renderModal(){
+  if(state.modal === "backupHelp"){
+    return `
+      <div class="modal-overlay" onclick="closeModal()">
+        <div class="modal-card" onclick="event.stopPropagation()">
+          <h3>💾 バックアップ方法</h3>
+          <p class="sub" style="margin-bottom:0;">「書き出す」を押すとファイルが1つ保存されます。中身を見る必要はありません。機種変更したときや、データが消えてしまったときに「読み込む」からそのファイルを選べば元に戻ります。心配なら、Googleドライブや自分宛てのLINE・メールにも送っておくと安心です。</p>
+          <button class="btn btn-primary" style="margin-top:16px;" onclick="closeModal()">閉じる</button>
+        </div>
+      </div>
+    `;
+  }
+  return "";
 }
 
 function renderScreen(){
@@ -990,23 +1020,31 @@ function renderSettings(){
     <div class="card" style="margin-bottom:14px;">
       <div style="font-weight:700; margin-bottom:6px;">💾 データのバックアップ</div>
       <p class="sub" style="margin-bottom:14px;">端末を変えたり、うっかり消してしまった時のために、データをファイルに書き出しておけます。</p>
-      <div class="btn-row">
+      <div class="btn-row" style="margin-bottom:10px;">
         <button class="btn btn-mint" onclick="exportData()">書き出す</button>
         <button class="btn btn-ghost" onclick="triggerImport()">読み込む</button>
       </div>
       <input type="file" id="importFileInput" accept="application/json" style="display:none;" onchange="handleImportFile(this)">
+      <button class="btn btn-ghost btn-small" onclick="openModal('backupHelp')">？ バックアップ方法</button>
     </div>
 
     <div class="card" style="margin-bottom:14px;">
-      <div style="font-weight:700; margin-bottom:12px;">📅 大事な日程（任意）</div>
-      <label class="field-label">次のテスト</label>
-      <input type="date" value="${escapeAttr(p.nextTestDate)}" onchange="updateProfileField('nextTestDate', this.value)" style="margin-bottom:14px;">
-      <label class="field-label">第二志望 本番</label>
-      <input type="date" value="${escapeAttr(p.secondChoiceDate)}" onchange="updateProfileField('secondChoiceDate', this.value)" style="margin-bottom:14px;">
-      <label class="field-label">第一志望 本番</label>
-      <input type="date" value="${escapeAttr(p.firstChoiceDate)}" onchange="updateProfileField('firstChoiceDate', this.value)" style="margin-bottom:14px;">
-      <label class="field-label">誕生日</label>
-      <input type="date" value="${escapeAttr(p.birthday)}" onchange="updateProfileField('birthday', this.value)">
+      <div style="display:flex; justify-content:space-between; align-items:center; cursor:pointer;" onclick="toggleDateSection()">
+        <div style="font-weight:700;">📅 大事な日程（任意）</div>
+        <div style="font-size:13px; color:var(--text-dim);">${state.dateSectionOpen ? "▲" : "▽"}</div>
+      </div>
+      ${state.dateSectionOpen ? `
+        <div style="margin-top:16px;">
+          <label class="field-label">次のテスト</label>
+          <input type="date" value="${escapeAttr(p.nextTestDate)}" onchange="updateProfileField('nextTestDate', this.value)" style="margin-bottom:14px;">
+          <label class="field-label">第二志望 本番</label>
+          <input type="date" value="${escapeAttr(p.secondChoiceDate)}" onchange="updateProfileField('secondChoiceDate', this.value)" style="margin-bottom:14px;">
+          <label class="field-label">第一志望 本番</label>
+          <input type="date" value="${escapeAttr(p.firstChoiceDate)}" onchange="updateProfileField('firstChoiceDate', this.value)" style="margin-bottom:14px;">
+          <label class="field-label">誕生日</label>
+          <input type="date" value="${escapeAttr(p.birthday)}" onchange="updateProfileField('birthday', this.value)">
+        </div>
+      ` : ""}
     </div>
 
     <div class="card" style="margin-bottom:14px;">
@@ -1046,6 +1084,7 @@ function updateProfileField(key, value){
   db.profile[key] = value;
   saveData(db);
 }
+function toggleDateSection(){ state.dateSectionOpen = !state.dateSectionOpen; render(); }
 function daysUntil(dateStr){
   if(!dateStr) return null;
   const target = new Date(dateStr + "T00:00:00");
