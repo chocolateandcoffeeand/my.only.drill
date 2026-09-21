@@ -157,8 +157,8 @@
     display:flex; align-items:center; justify-content:center; font-size:22px;
   }
   .mission-card .body{flex:1; min-width:0;}
-  .mission-card .m-title{font-weight:700; font-size:15.5px; margin-bottom:3px;}
-  .mission-card .m-sub{font-size:12.5px; color:var(--text-dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .mission-card .m-title, .bonus-card .m-title, .game-select-card .m-title{font-weight:700; font-size:15.5px; margin-bottom:3px;}
+  .mission-card .m-sub, .bonus-card .m-sub, .game-select-card .m-sub{font-size:12.5px; color:var(--text-dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
 
   .tab-toggle{display:flex; background:var(--bg-2); border:1px solid var(--border); border-radius:999px; padding:4px; margin-bottom:20px;}
   .tab-btn{flex:1; text-align:center; padding:10px 0; border-radius:999px; font-size:13.5px; font-weight:700; color:var(--text-dim); cursor:pointer;}
@@ -236,6 +236,12 @@
   .bonus-card{display:flex; align-items:center; gap:14px; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-lg); padding:16px 18px; cursor:pointer;}
   .bonus-card:active{transform:scale(0.98);}
   .bonus-card.locked{opacity:0.5; cursor:default;}
+
+  .game-select-card{display:flex; align-items:center; gap:14px; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-lg); padding:16px 18px; margin-bottom:12px; cursor:pointer;}
+  .game-select-card:active{transform:scale(0.98);}
+  .game-select-card .icon{width:46px; height:46px; border-radius:14px; background:var(--accent-soft); color:var(--accent); display:flex; align-items:center; justify-content:center; font-size:22px; flex:none;}
+  .game-select-card.locked{cursor:default; opacity:0.6;}
+  .game-select-card .icon.silhouette{background:var(--surface-2); color:var(--text-faint);}
 
   .stat-row{display:flex; gap:10px; margin-top:22px;}
   .empty-note{background:var(--surface); border:1px dashed var(--border); border-radius:var(--radius-md); padding:16px; text-align:center; color:var(--text-dim); font-size:13.5px;}
@@ -348,6 +354,12 @@
    ========================================================= */
 
 const STORAGE_KEY = "qdrill.v2";
+const MINI_GAMES = [
+  {id:"invader", name:"レトロインベーダー", icon:"👾", unlockAt:1, desc:"降ってくる敵を撃ち落とせ"},
+  {id:"breaker", name:"ブロックくずし", icon:"🧱", unlockAt:5, desc:"バーを動かしてブロックを壊しまくれ"},
+];
+const MINI_GAME_MAX_LEVEL = 10;
+function levelUpScoreNeeded(level){ return 80 + (level-1)*40; }
 const DEV_PREVIEW = new URLSearchParams(window.location.search).get("preview") === "1";
 
 /* ---------------- sound effects (synthesized, no audio files) ---------------- */
@@ -421,8 +433,8 @@ function loadData(){
       diagnosis: p.diagnosis || null,
       missedBank: p.missedBank || [],
       enemies: p.enemies || {},
-      player: p.player || {exp:0, tokens:0, defeatedCount:0},
-      miniGames: p.miniGames || {invader:{unlocked:false, bestScore:0}},
+      player: p.player || {exp:0, tokens:0, defeatedCount:0, bonusPlays:0},
+      miniGames: p.miniGames || {invader:{unlocked:false, bestScore:0, level:1}, breaker:{unlocked:false, bestScore:0, level:1}},
       profile: p.profile || {nextTestDate:"", secondChoiceDate:"", firstChoiceDate:"", birthday:""},
       questionBank: p.questionBank || {},
       settings: p.settings || {theme:"dark"},
@@ -432,8 +444,8 @@ function loadData(){
 function defaultData(){
   return {
     unitStats:{}, sessions:[], diagnosis:null, missedBank:[],
-    enemies:{}, player:{exp:0, tokens:0, defeatedCount:0},
-    miniGames:{invader:{unlocked:false, bestScore:0}},
+    enemies:{}, player:{exp:0, tokens:0, defeatedCount:0, bonusPlays:0},
+    miniGames:{invader:{unlocked:false, bestScore:0, level:1}, breaker:{unlocked:false, bestScore:0, level:1}},
     profile:{nextTestDate:"", secondChoiceDate:"", firstChoiceDate:"", birthday:""},
     questionBank:{},
     settings:{theme:"dark"},
@@ -441,6 +453,17 @@ function defaultData(){
 }
 function saveData(data){ localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); }
 let db = loadData();
+function normalizeMiniGames(){
+  if(!db.miniGames) db.miniGames = {};
+  MINI_GAMES.forEach(g=>{
+    if(!db.miniGames[g.id]) db.miniGames[g.id] = {unlocked:false, bestScore:0, level:1};
+    if(typeof db.miniGames[g.id].level !== "number") db.miniGames[g.id].level = 1;
+    if(typeof db.miniGames[g.id].bestScore !== "number") db.miniGames[g.id].bestScore = 0;
+    if(typeof db.miniGames[g.id].unlocked !== "boolean") db.miniGames[g.id].unlocked = false;
+  });
+  if(typeof db.player.bonusPlays !== "number") db.player.bonusPlays = (db.player.defeatedCount>0) ? 3 : 0;
+}
+normalizeMiniGames();
 function applyTheme(){
   document.documentElement.setAttribute("data-theme", (db.settings && db.settings.theme) || "dark");
 }
@@ -535,9 +558,12 @@ function enemyAccuracyLabel(e){
   return pct === null ? "未挑戦" : "達成率" + pct + "%";
 }
 function checkGameUnlocks(){
-  if(db.player.defeatedCount >= 1 && !db.miniGames.invader.unlocked){
-    db.miniGames.invader.unlocked = true;
-  }
+  MINI_GAMES.forEach(g=>{
+    if(!db.miniGames[g.id]) db.miniGames[g.id] = {unlocked:false, bestScore:0, level:1};
+    if(db.player.defeatedCount >= g.unlockAt && !db.miniGames[g.id].unlocked){
+      db.miniGames[g.id].unlocked = true;
+    }
+  });
 }
 function recordEnemyAttempt(enemyId, correct){
   const e = db.enemies[enemyId];
@@ -556,6 +582,7 @@ function recordEnemyAttempt(enemyId, correct){
       db.player.exp += 50;
       db.player.tokens += 1;
       db.player.defeatedCount = (db.player.defeatedCount||0) + 1;
+      db.player.bonusPlays = 3;
       defeated = true;
       checkGameUnlocks();
     }
@@ -630,15 +657,16 @@ let state = {
   modal: null,
   dateSectionOpen: false,
   defeatedSectionOpen: false,
+  currentGame: "invader",
   quiz: { index: 0, correct: 0, answered: false, lastChoice: null, missed: [], pendingChoice: null },
 };
 
 function goto(screen){
-  if(state.screen === "minigame" && screen !== "minigame") stopInvaderGame();
+  if(state.screen === "minigame" && screen !== "minigame") stopMiniGame();
   state.screen = screen;
   render();
   window.scrollTo(0,0);
-  if(screen === "minigame") startInvaderGame();
+  if(screen === "minigame") startMiniGame(state.currentGame || "invader");
 }
 function openCreate(tab){ state.createTab = tab; state.flow = (tab==="manual") ? "quiz" : "diagnosis"; goto("create"); }
 
@@ -889,6 +917,7 @@ function renderScreen(){
     case "needsScan": return renderNeedsScan();
     case "guide": return renderGuide();
     case "minigame": return renderMiniGame();
+    case "gameSelect": return renderGameSelect();
     case "settings": return renderSettings();
     case "quiz": return renderQuiz();
     case "result": return renderResult();
@@ -984,13 +1013,13 @@ function renderHome(){
     `;
   }
 
-  const bonusUnlocked = db.miniGames.invader.unlocked || DEV_PREVIEW;
+  const anyGameUnlocked = MINI_GAMES.some(g=>gameUnlocked(g.id));
   const bonusHtml = `
-    <div class="bonus-card ${bonusUnlocked ? "" : "locked"}" ${bonusUnlocked ? `onclick="goto('minigame')"` : ""}>
+    <div class="bonus-card ${anyGameUnlocked ? "" : "locked"}" ${anyGameUnlocked ? `onclick="goto('gameSelect')"` : ""}>
       <div class="icon" style="background:var(--accent-soft); color:var(--accent); width:44px; height:44px; border-radius:12px; display:flex; align-items:center; justify-content:center; font-size:20px;">🎮</div>
       <div class="body">
         <div class="m-title">ボーナスゲーム</div>
-        <div class="m-sub">${db.miniGames.invader.unlocked ? "レトロインベーダー・解放中！" : (DEV_PREVIEW ? "敵を1体倒すと解放だよ（プレビューモード中）" : "敵を1体倒すと解放されるよ")}</div>
+        <div class="m-sub">${anyGameUnlocked ? "プレイ回数 残り"+(db.player.bonusPlays||0)+"回 ・ "+unlockedGamesCount()+"種類解放中" : (DEV_PREVIEW ? "敵を1体倒すと解放だよ（プレビューモード中）" : "敵を1体倒すと解放されるよ")}</div>
       </div>
     </div>
   `;
@@ -1396,6 +1425,7 @@ function handleImportFile(input){
       const parsed = JSON.parse(e.target.result);
       if(!window.confirm("今のデータを、読み込んだバックアップで上書きするよ。よろしい？")){ input.value = ""; return; }
       db = Object.assign(defaultData(), parsed);
+      normalizeMiniGames();
       saveData(db);
       applyTheme();
       showToast("バックアップを読み込んだよ");
@@ -1440,91 +1470,211 @@ function resetAllData(){
   goto("home");
 }
 
-/* ---------------- mini game: retro invader ---------------- */
-function renderMiniGame(){
-  const previewNote = !db.miniGames.invader.unlocked ? `
-    <div class="callout" style="padding:12px 16px; margin-bottom:16px;">
-      <div class="c-title" style="font-size:13px;">🔒 プレビューモード</div>
-      <div class="c-sub" style="margin-bottom:0;">開発者プレビューで表示しています。実際の生徒には、敵を1体倒すまでこの画面は出ません。</div>
-    </div>
-  ` : "";
+/* ---------------- mini games: select screen, retro invader, block breaker ---------------- */
+function gameUnlocked(id){
+  return (db.miniGames[id] && db.miniGames[id].unlocked) || DEV_PREVIEW;
+}
+function unlockedGamesCount(){
+  return MINI_GAMES.filter(g=>gameUnlocked(g.id)).length;
+}
+function renderGameSelect(){
+  const plays = db.player.bonusPlays || 0;
   return `
     <h2 class="title">ボーナスゲーム</h2>
-    <p class="sub">画面を指でなぞって自機を動かそう。弾は自動で出るよ（45秒）。</p>
+    <p class="sub">プレイ回数 残り${plays}回。ミッションをクリアするとまた遊べるようになるよ。</p>
+    ${MINI_GAMES.map(g=>{
+      const unlocked = gameUnlocked(g.id);
+      const gs = db.miniGames[g.id] || {level:1, bestScore:0};
+      if(unlocked){
+        return `
+          <div class="game-select-card" onclick="openMiniGame('${g.id}')">
+            <div class="icon">${g.icon}</div>
+            <div class="body">
+              <div class="m-title">${escapeHtml(g.name)}</div>
+              <div class="m-sub">Lv.${gs.level} ・ ベスト ${gs.bestScore}点</div>
+            </div>
+          </div>`;
+      }
+      const remain = Math.max(0, g.unlockAt - (db.player.defeatedCount||0));
+      return `
+        <div class="game-select-card locked">
+          <div class="icon silhouette">❔</div>
+          <div class="body">
+            <div class="m-title">？？？</div>
+            <div class="m-sub">まだ解放されていないよ！ミッションを残り${remain}個クリアしてね</div>
+          </div>
+        </div>`;
+    }).join("")}
+    <button class="btn btn-ghost" style="margin-top:6px;" onclick="goto('home')">ホームへ戻る</button>
+  `;
+}
+function openMiniGame(id){
+  if(!gameUnlocked(id)) return;
+  if((db.player.bonusPlays||0) <= 0 && !DEV_PREVIEW){
+    showToast("プレイ回数が0だよ。ミッションをクリアするとまた遊べるようになるよ");
+    return;
+  }
+  state.currentGame = id;
+  goto("minigame");
+}
+function retryMiniGame(){
+  if((db.player.bonusPlays||0) <= 0 && !DEV_PREVIEW){
+    showToast("プレイ回数が0だよ。ミッションをクリアするとまた遊べるようになるよ");
+    goto("gameSelect");
+    return;
+  }
+  goto("minigame");
+}
+function renderMiniGame(){
+  const id = state.currentGame || "invader";
+  const g = MINI_GAMES.find(m=>m.id===id) || MINI_GAMES[0];
+  const gs = db.miniGames[id] || {level:1, bestScore:0};
+  const previewNote = !gameUnlocked(id) ? `
+    <div class="callout" style="padding:12px 16px; margin-bottom:16px;">
+      <div class="c-title" style="font-size:13px;">🔒 プレビューモード</div>
+      <div class="c-sub" style="margin-bottom:0;">開発者プレビューで表示しています。実際の生徒には、条件を満たすまでこの画面は出ません。</div>
+    </div>
+  ` : "";
+  const hint = id === "breaker" ? "画面を指でなぞってバーを動かそう。ボールは自動で跳ね返るよ。" : "画面を指でなぞって自機を動かそう。弾は自動で出るよ。";
+  return `
+    <h2 class="title">${escapeHtml(g.name)}</h2>
+    <p class="sub">${hint}45秒でどれだけ稼げるか勝負！</p>
     ${previewNote}
     <div style="display:flex; justify-content:space-between; margin-bottom:8px; font-family:var(--font-display); font-size:13px; color:var(--text-dim);">
-      <span>SCORE <b id="invScore" style="color:var(--text);">0</b></span>
-      <span>BEST <b style="color:var(--text);">${db.miniGames.invader.bestScore}</b></span>
-      <span>TIME <b id="invTime" style="color:var(--text);">45</b></span>
+      <span>LV <b id="gameLevel" style="color:var(--text);">${gs.level}</b></span>
+      <span>SCORE <b id="gameScore" style="color:var(--text);">0</b></span>
+      <span>BEST <b style="color:var(--text);">${gs.bestScore}</b></span>
+      <span>TIME <b id="gameTime" style="color:var(--text);">45</b></span>
     </div>
-    <canvas id="invaderCanvas" width="480" height="360" style="width:100%; height:auto; border-radius:var(--radius-md); border:1px solid var(--border); touch-action:none; display:block; background:#0B0A16;"></canvas>
-    <div id="invEndArea"></div>
-    <button class="btn btn-ghost" style="margin-top:16px;" onclick="goto('home')">ホームへ戻る</button>
+    <canvas id="miniCanvas" width="480" height="360" style="width:100%; height:auto; border-radius:var(--radius-md); border:1px solid var(--border); touch-action:none; display:block; background:#0B0A16;"></canvas>
+    <div id="miniEndArea"></div>
+    <button class="btn btn-ghost" style="margin-top:16px;" onclick="goto('gameSelect')">ゲーム一覧へ戻る</button>
   `;
 }
 
-let invaderState = null;
-let invaderRAF = null;
+let miniGameState = null;
+let miniGameRAF = null;
+let miniGameId = null;
 
-function startInvaderGame(){
-  const canvas = document.getElementById("invaderCanvas");
-  if(!canvas) return;
-  invaderState = {
-    shipX: canvas.width/2 - 15, shipW: 30, shipH: 12,
-    aliens: [], bullets: [], dx: 1.3, score: 0,
-    startTime: null, timeLeft: 45, lastShotTs: 0, over: false, win: false,
-  };
-  const cols=6, rows=3, gapX=8, gapY=10, aw=22, ah=14, startX=14, startY=20;
-  for(let r=0;r<rows;r++){
-    for(let c=0;c<cols;c++){
-      invaderState.aliens.push({x:startX+c*(aw+gapX), y:startY+r*(ah+gapY), w:aw, h:ah, alive:true});
-    }
+function startMiniGame(id){
+  miniGameId = id;
+  if(!DEV_PREVIEW){
+    db.player.bonusPlays = Math.max(0, (db.player.bonusPlays||0) - 1);
+    saveData(db);
   }
-  canvas.addEventListener("pointermove", invaderPointerMove);
-  canvas.addEventListener("pointerdown", invaderPointerMove);
-  invaderRAF = requestAnimationFrame(invaderLoop);
+  if(id === "breaker") startBreakerGame(); else startInvaderGame();
 }
-function invaderPointerMove(e){
-  if(!invaderState || invaderState.over) return;
-  const canvas = document.getElementById("invaderCanvas");
+function stopMiniGame(){
+  if(miniGameRAF) cancelAnimationFrame(miniGameRAF);
+  miniGameRAF = null;
+  const canvas = document.getElementById("miniCanvas");
+  if(canvas){
+    canvas.removeEventListener("pointermove", miniGamePointerMove);
+    canvas.removeEventListener("pointerdown", miniGamePointerMove);
+  }
+  miniGameState = null;
+}
+function miniGamePointerMove(e){
+  if(!miniGameState || miniGameState.over) return;
+  const canvas = document.getElementById("miniCanvas");
   if(!canvas) return;
   const rect = canvas.getBoundingClientRect();
   const x = (e.clientX - rect.left) * (canvas.width / rect.width);
-  invaderState.shipX = Math.max(0, Math.min(canvas.width - invaderState.shipW, x - invaderState.shipW/2));
+  miniGameState.pointerX = x;
 }
-function stopInvaderGame(){
-  if(invaderRAF) cancelAnimationFrame(invaderRAF);
-  invaderRAF = null;
-  const canvas = document.getElementById("invaderCanvas");
-  if(canvas){
-    canvas.removeEventListener("pointermove", invaderPointerMove);
-    canvas.removeEventListener("pointerdown", invaderPointerMove);
+function updateHud(score, timeLeft){
+  const scoreEl = document.getElementById("gameScore");
+  const timeEl = document.getElementById("gameTime");
+  if(scoreEl) scoreEl.textContent = Math.round(score);
+  if(timeEl) timeEl.textContent = Math.ceil(timeLeft);
+}
+function endMiniGame(finalScore){
+  if(!miniGameState || miniGameState.over) return;
+  miniGameState.over = true;
+  if(miniGameRAF) cancelAnimationFrame(miniGameRAF);
+  miniGameRAF = null;
+  const gs = db.miniGames[miniGameId];
+  let leveledUp = false;
+  if(finalScore > gs.bestScore) gs.bestScore = finalScore;
+  if(gs.level < MINI_GAME_MAX_LEVEL && finalScore >= levelUpScoreNeeded(gs.level)){
+    gs.level++;
+    leveledUp = true;
   }
-  invaderState = null;
+  saveData(db);
+  const area = document.getElementById("miniEndArea");
+  if(area){
+    area.innerHTML = `
+      <div class="callout" style="text-align:center; margin-top:16px;">
+        ${leveledUp
+          ? `<div class="c-title" style="font-size:18px; color:var(--mint);">🎉 LEVEL UP！ → Lv.${gs.level}</div>`
+          : `<div class="c-title" style="font-size:18px;">TIME UP</div>`}
+        <div class="c-sub">スコア ${finalScore}（ベスト ${gs.bestScore}）</div>
+        <div class="btn-row">
+          <button class="btn btn-ghost" onclick="goto('gameSelect')">ゲーム一覧へ</button>
+          <button class="btn btn-primary" onclick="retryMiniGame()">もう一度</button>
+        </div>
+      </div>
+    `;
+  }
+}
+
+/* ---- invader ---- */
+function startInvaderGame(){
+  const canvas = document.getElementById("miniCanvas");
+  if(!canvas) return;
+  const level = (db.miniGames.invader && db.miniGames.invader.level) || 1;
+  miniGameState = {
+    kind:"invader",
+    shipX: canvas.width/2 - 15, shipW: 30, shipH: 12,
+    aliens: [], bullets: [], dx: 1.1 + (level-1)*0.14, score: 0,
+    startTime: null, timeLeft: 45, lastShotTs: 0, over:false,
+    shotInterval: Math.max(220, 450 - (level-1)*22),
+    pointerX: canvas.width/2,
+  };
+  spawnAlienWave(level);
+  canvas.addEventListener("pointermove", miniGamePointerMove);
+  canvas.addEventListener("pointerdown", miniGamePointerMove);
+  miniGameRAF = requestAnimationFrame(invaderLoop);
+}
+function spawnAlienWave(level){
+  const cols = Math.min(9, 6 + Math.floor((level-1)/2));
+  const rows = Math.min(5, 3 + Math.floor((level-1)/3));
+  const gapX=8, gapY=10, aw=22, ah=14, startX=14, startY=20;
+  miniGameState.aliens = [];
+  for(let r=0;r<rows;r++){
+    for(let c=0;c<cols;c++){
+      miniGameState.aliens.push({x:startX+c*(aw+gapX), y:startY+r*(ah+gapY), w:aw, h:ah, alive:true});
+    }
+  }
 }
 function invaderLoop(ts){
-  if(!invaderState) return;
-  const canvas = document.getElementById("invaderCanvas");
-  if(!canvas){ invaderRAF = null; return; }
+  if(!miniGameState) return;
+  const canvas = document.getElementById("miniCanvas");
+  if(!canvas){ miniGameRAF = null; return; }
   const ctx = canvas.getContext("2d");
   const W = canvas.width, H = canvas.height;
-  const s = invaderState;
+  const s = miniGameState;
   if(s.startTime === null) s.startTime = ts;
+  if(s.pointerX !== undefined){ s.shipX = Math.max(0, Math.min(W - s.shipW, s.pointerX - s.shipW/2)); }
 
   if(!s.over){
     s.timeLeft = Math.max(0, 45 - (ts - s.startTime)/1000);
-    if(s.timeLeft <= 0){ endInvaderGame(false); }
+    if(s.timeLeft <= 0){ endMiniGame(Math.round(s.score)); }
 
     let hitEdge = false;
     s.aliens.forEach(a=>{ if(a.alive){ a.x += s.dx; if(a.x<=0 || a.x+a.w>=W) hitEdge = true; } });
     if(hitEdge){
-      s.dx *= -1.06;
-      s.aliens.forEach(a=>{ if(a.alive) a.y += 10; });
+      s.dx *= -1.05;
+      s.aliens.forEach(a=>{ if(a.alive) a.y += 8; });
     }
     const shipY = H - 24;
-    s.aliens.forEach(a=>{ if(a.alive && a.y + a.h >= shipY) endInvaderGame(false); });
-
-    if(ts - s.lastShotTs > 450){
+    const level = (db.miniGames.invader && db.miniGames.invader.level) || 1;
+    const breached = s.aliens.some(a=>a.alive && a.y + a.h >= shipY);
+    if(breached){
+      spawnAlienWave(level);
+      s.dx = (s.dx > 0 ? 1 : -1) * (1.1 + (level-1)*0.14);
+    }
+    if(!s.over && ts - s.lastShotTs > s.shotInterval){
       s.bullets.push({x: s.shipX + s.shipW/2 - 2, y: shipY - 4, w:4, h:10});
       s.lastShotTs = ts;
     }
@@ -1538,7 +1688,10 @@ function invaderLoop(ts){
       });
     });
     s.bullets = s.bullets.filter(b=> !b.hit);
-    if(s.aliens.length && s.aliens.every(a=> !a.alive)){ s.score += 50; endInvaderGame(true); }
+    if(s.aliens.length && s.aliens.every(a=> !a.alive)){
+      s.score += 50;
+      spawnAlienWave(level);
+    }
   }
 
   ctx.clearRect(0,0,W,H);
@@ -1550,34 +1703,101 @@ function invaderLoop(ts){
   ctx.fillStyle = "#8B6CFF";
   ctx.fillRect(s.shipX, H-24, s.shipW, s.shipH);
 
-  const scoreEl = document.getElementById("invScore");
-  const timeEl = document.getElementById("invTime");
-  if(scoreEl) scoreEl.textContent = s.score;
-  if(timeEl) timeEl.textContent = Math.ceil(s.timeLeft);
-
-  if(!s.over) invaderRAF = requestAnimationFrame(invaderLoop);
+  updateHud(s.score, s.timeLeft);
+  if(!s.over) miniGameRAF = requestAnimationFrame(invaderLoop);
 }
-function endInvaderGame(win){
-  if(!invaderState || invaderState.over) return;
-  invaderState.over = true;
-  invaderState.win = win;
-  if(invaderState.score > db.miniGames.invader.bestScore) db.miniGames.invader.bestScore = invaderState.score;
-  saveData(db);
-  if(invaderRAF) cancelAnimationFrame(invaderRAF);
-  invaderRAF = null;
-  const area = document.getElementById("invEndArea");
-  if(area){
-    area.innerHTML = `
-      <div class="callout" style="text-align:center; margin-top:16px;">
-        <div class="c-title" style="font-size:18px;">${win ? "🎉 CLEAR!" : "TIME UP"}</div>
-        <div class="c-sub">スコア ${invaderState.score}（ベスト ${db.miniGames.invader.bestScore}）</div>
-        <div class="btn-row">
-          <button class="btn btn-ghost" onclick="goto('minigame')">もう一度</button>
-          <button class="btn btn-primary" onclick="goto('home')">ホームへ</button>
-        </div>
-      </div>
-    `;
+
+/* ---- block breaker ---- */
+function startBreakerGame(){
+  const canvas = document.getElementById("miniCanvas");
+  if(!canvas) return;
+  const level = (db.miniGames.breaker && db.miniGames.breaker.level) || 1;
+  const paddleW = Math.max(50, 92 - (level-1)*4);
+  const speed = 3.6 + (level-1)*0.3;
+  miniGameState = {
+    kind:"breaker",
+    paddleX: canvas.width/2 - paddleW/2, paddleW, paddleH:10,
+    ballX: canvas.width/2, ballY: canvas.height-40, ballR:6,
+    ballVX: speed*0.55, ballVY: -speed,
+    bricks: [], score:0, startTime:null, timeLeft:45, over:false,
+    pointerX: canvas.width/2,
+  };
+  spawnBricks(level);
+  canvas.addEventListener("pointermove", miniGamePointerMove);
+  canvas.addEventListener("pointerdown", miniGamePointerMove);
+  miniGameRAF = requestAnimationFrame(breakerLoop);
+}
+function spawnBricks(level){
+  const cols = 7, rows = Math.min(6, 3 + Math.floor((level-1)/3));
+  const gapX=6, gapY=8, bw=58, bh=14, startX=10, startY=20;
+  const colors = ["#8B6CFF","#33E8C4","#FFD166","#FF6B85"];
+  miniGameState.bricks = [];
+  for(let r=0;r<rows;r++){
+    for(let c=0;c<cols;c++){
+      miniGameState.bricks.push({x:startX+c*(bw+gapX), y:startY+r*(bh+gapY), w:bw, h:bh, alive:true, color:colors[r%colors.length]});
+    }
   }
+}
+function breakerLoop(ts){
+  if(!miniGameState) return;
+  const canvas = document.getElementById("miniCanvas");
+  if(!canvas){ miniGameRAF = null; return; }
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  const s = miniGameState;
+  if(s.startTime === null) s.startTime = ts;
+  if(s.pointerX !== undefined){ s.paddleX = Math.max(0, Math.min(W - s.paddleW, s.pointerX - s.paddleW/2)); }
+
+  if(!s.over){
+    s.timeLeft = Math.max(0, 45 - (ts - s.startTime)/1000);
+    if(s.timeLeft <= 0){ endMiniGame(Math.round(s.score)); }
+
+    s.ballX += s.ballVX; s.ballY += s.ballVY;
+    if(s.ballX - s.ballR <= 0){ s.ballX = s.ballR; s.ballVX *= -1; }
+    if(s.ballX + s.ballR >= W){ s.ballX = W - s.ballR; s.ballVX *= -1; }
+    if(s.ballY - s.ballR <= 0){ s.ballY = s.ballR; s.ballVY *= -1; }
+
+    const paddleY = H - 22;
+    if(s.ballVY > 0 && s.ballY + s.ballR >= paddleY && s.ballY + s.ballR <= paddleY + 14 &&
+       s.ballX >= s.paddleX && s.ballX <= s.paddleX + s.paddleW){
+      const hitPos = (s.ballX - (s.paddleX + s.paddleW/2)) / (s.paddleW/2);
+      const speed = Math.hypot(s.ballVX, s.ballVY);
+      s.ballVX = hitPos * speed;
+      s.ballVY = -Math.sqrt(Math.max(1, speed*speed - s.ballVX*s.ballVX));
+      s.ballY = paddleY - s.ballR;
+    }
+    if(s.ballY - s.ballR > H){
+      // 落としても失敗にはしない。中央から再スタートする（減点なし）
+      const level = (db.miniGames.breaker && db.miniGames.breaker.level) || 1;
+      const speed = 3.6 + (level-1)*0.3;
+      s.ballX = W/2; s.ballY = H-40;
+      s.ballVX = (Math.random()<0.5?-1:1)*speed*0.55;
+      s.ballVY = -speed;
+    }
+    s.bricks.forEach(b=>{
+      if(b.alive && s.ballX+s.ballR>b.x && s.ballX-s.ballR<b.x+b.w && s.ballY+s.ballR>b.y && s.ballY-s.ballR<b.y+b.h){
+        b.alive = false; s.score += 10; s.ballVY *= -1;
+      }
+    });
+    if(s.bricks.length && s.bricks.every(b=> !b.alive)){
+      s.score += 50;
+      const level = (db.miniGames.breaker && db.miniGames.breaker.level) || 1;
+      spawnBricks(level);
+    }
+  }
+
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle = "#0B0A16"; ctx.fillRect(0,0,W,H);
+  s.bricks.forEach(b=>{ if(b.alive){ ctx.fillStyle = b.color; ctx.fillRect(b.x,b.y,b.w,b.h); } });
+  ctx.fillStyle = "#8B6CFF";
+  ctx.fillRect(s.paddleX, H-22, s.paddleW, 10);
+  ctx.beginPath();
+  ctx.arc(s.ballX, s.ballY, s.ballR, 0, Math.PI*2);
+  ctx.fillStyle = "#FFD166";
+  ctx.fill();
+
+  updateHud(s.score, s.timeLeft);
+  if(!s.over) miniGameRAF = requestAnimationFrame(breakerLoop);
 }
 
 /* ---------------- prompt / paste (shared by quiz & diagnosis flow) ---------------- */
