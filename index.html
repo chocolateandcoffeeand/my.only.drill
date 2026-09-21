@@ -227,6 +227,11 @@
   .enemy-row .name{font-weight:700; font-size:14px;}
   .enemy-row .acc{font-size:12px; color:var(--text-dim); margin-top:2px;}
   .enemy-row .state-tag{font-size:10.5px; font-weight:700; padding:4px 9px; border-radius:999px; background:var(--accent-soft); color:var(--accent); flex:none;}
+  .enemy-row.near-defeat{border-color:var(--mint); background:var(--mint-soft);}
+  .enemy-row.near-defeat .icon{display:inline-block; transform:rotate(180deg);}
+  .enemy-row.near-defeat .state-tag{background:var(--mint-soft); color:var(--mint);}
+  .enemy-row.defeated{border-color:var(--mint); background:var(--mint-soft); cursor:default;}
+  .enemy-row .state-tag.defeated-tag{background:var(--mint-soft); color:var(--mint);}
 
   .bonus-card{display:flex; align-items:center; gap:14px; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-lg); padding:16px 18px; cursor:pointer;}
   .bonus-card:active{transform:scale(0.98);}
@@ -499,7 +504,7 @@ function expProgress(exp){
 function ensureEnemy(subject, unit, order){
   const k = unitKey(subject, unit);
   if(!db.enemies[k]){
-    db.enemies[k] = {subject, unit, state:"WEAK", history:[], createdAt:new Date().toISOString(), order:(typeof order==="number")?order:999};
+    db.enemies[k] = {subject, unit, state:"WEAK", createdAt:new Date().toISOString(), order:(typeof order==="number")?order:999};
   } else if(typeof order === "number"){
     db.enemies[k].order = order;
   }
@@ -520,10 +525,14 @@ function earliestActiveEnemyInSubject(subject){
   candidates.sort((a,b)=>(a.order ?? 999) - (b.order ?? 999));
   return candidates[0];
 }
+function enemyAccuracyPct(e){
+  const s = db.unitStats[unitKey(e.subject, e.unit)];
+  if(!s || s.attempts === 0) return null;
+  return Math.round((s.correct / s.attempts) * 100);
+}
 function enemyAccuracyLabel(e){
-  if(!e.history || e.history.length === 0) return "未挑戦";
-  const c = e.history.filter(Boolean).length;
-  return Math.round((c/e.history.length)*100) + "%";
+  const pct = enemyAccuracyPct(e);
+  return pct === null ? "未挑戦" : "達成率" + pct + "%";
 }
 function checkGameUnlocks(){
   if(db.player.defeatedCount >= 1 && !db.miniGames.invader.unlocked){
@@ -534,15 +543,14 @@ function recordEnemyAttempt(enemyId, correct){
   const e = db.enemies[enemyId];
   if(!e) return {defeated:false};
   if(e.state === "WEAK") e.state = "TRAINING";
-  e.history.push(correct);
-  if(e.history.length > 5) e.history.shift();
   db.player.exp += correct ? 2 : 0;
   let defeated = false;
-  if(e.state !== "DEFEATED" && e.history.length >= 5){
-    const correctCount = e.history.filter(Boolean).length;
-    const len = e.history.length;
-    const lastTwoBothWrong = e.history[len-1]===false && e.history[len-2]===false;
-    if(correctCount >= 4 && !lastTwoBothWrong){
+  // 達成率は unitStats（累積の正答率）で判定する。表示している「達成率」と
+  // 撃破の判定基準を必ず一致させるための設計（直近5問のローリング判定はしない）。
+  const stats = db.unitStats[enemyId];
+  if(e.state !== "DEFEATED" && stats && stats.attempts >= 5){
+    const pct = (stats.correct / stats.attempts) * 100;
+    if(pct >= 80){
       e.state = "DEFEATED";
       e.defeatedAt = new Date().toISOString();
       db.player.exp += 50;
@@ -621,6 +629,7 @@ let state = {
   newEnemyUnit: "",
   modal: null,
   dateSectionOpen: false,
+  defeatedSectionOpen: false,
   quiz: { index: 0, correct: 0, answered: false, lastChoice: null, missed: [], pendingChoice: null },
 };
 
@@ -920,23 +929,59 @@ function renderHome(){
   ` : "";
 
   const enemies = activeEnemies();
-  const defeatedTotal = db.player.defeatedCount || 0;
+  const defeatedList = Object.entries(db.enemies)
+    .filter(([id,e])=>e.state === "DEFEATED")
+    .map(([id,e])=>Object.assign({id}, e));
+
+  const activeRowsHtml = enemies.map(e=>{
+    const pct = enemyAccuracyPct(e);
+    const nearDefeat = pct !== null && pct >= 80;
+    return `
+      <div class="enemy-row ${nearDefeat ? 'near-defeat' : ''}" onclick="startEnemyDrill('${e.id}')">
+        <div class="icon">👾</div>
+        <div class="body">
+          <div class="name">${escapeHtml(e.subject)}｜${escapeHtml(e.unit)}</div>
+          <div class="acc">${enemyAccuracyLabel(e)}${bankCountFor(e.subject,e.unit)>0 ? " ・ 📦"+bankCountFor(e.subject,e.unit)+"問" : ""}</div>
+        </div>
+        <div class="state-tag">${e.state === "TRAINING" ? "TRAINING" : "WEAK"}</div>
+      </div>`;
+  }).join("");
+
+  const defeatedRowHtml = (e)=>`
+      <div class="enemy-row defeated">
+        <div class="icon">🏆</div>
+        <div class="body">
+          <div class="name">${escapeHtml(e.subject)}｜${escapeHtml(e.unit)}</div>
+          <div class="acc">${enemyAccuracyLabel(e)}</div>
+        </div>
+        <div class="state-tag defeated-tag">DEFEATED</div>
+      </div>`;
+
+  let defeatedSectionHtml = "";
+  if(defeatedList.length > 0 && defeatedList.length < 3){
+    defeatedSectionHtml = `
+      <p class="sub" style="margin-top:18px; margin-bottom:10px;">✅ 倒した敵</p>
+      ${defeatedList.map(defeatedRowHtml).join("")}
+    `;
+  } else if(defeatedList.length >= 3){
+    defeatedSectionHtml = `
+      <div style="margin-top:18px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; cursor:pointer;" onclick="toggleDefeatedSection()">
+          <p class="sub" style="margin:0;">✅ 倒した敵（${defeatedList.length}）</p>
+          <span style="font-size:13px; color:var(--text-dim);">${state.defeatedSectionOpen ? "▲" : "▽"}</span>
+        </div>
+        ${state.defeatedSectionOpen ? `<div style="margin-top:10px;">${defeatedList.map(defeatedRowHtml).join("")}</div>` : ""}
+      </div>
+    `;
+  }
+
   let enemyListHtml = "";
-  if(enemies.length > 0){
+  if(enemies.length > 0 || defeatedList.length > 0){
     enemyListHtml = `
       <p class="sub" style="margin-top:22px; margin-bottom:10px;">👾 君の敵</p>
-      ${enemies.map(e=>`
-        <div class="enemy-row" onclick="startEnemyDrill('${e.id}')">
-          <div class="icon">👾</div>
-          <div class="body">
-            <div class="name">${escapeHtml(e.subject)}｜${escapeHtml(e.unit)}</div>
-            <div class="acc">${enemyAccuracyLabel(e)}${bankCountFor(e.subject,e.unit)>0 ? " ・ 📦"+bankCountFor(e.subject,e.unit)+"問" : ""}</div>
-          </div>
-          <div class="state-tag">${e.state === "TRAINING" ? "TRAINING" : "WEAK"}</div>
-        </div>`).join("")}
+      ${activeRowsHtml}
+      ${defeatedSectionHtml}
     `;
-  } else if(defeatedTotal > 0){
-    enemyListHtml = `<div class="empty-note" style="margin-top:22px;">見えている敵は全部倒したよ！診断し直すと新しい敵が見つかるかも。</div>`;
   }
 
   const bonusUnlocked = db.miniGames.invader.unlocked || DEV_PREVIEW;
@@ -1311,6 +1356,7 @@ function updateProfileField(key, value){
   saveData(db);
 }
 function toggleDateSection(){ state.dateSectionOpen = !state.dateSectionOpen; render(); }
+function toggleDefeatedSection(){ state.defeatedSectionOpen = !state.defeatedSectionOpen; render(); }
 function daysUntil(dateStr){
   if(!dateStr) return null;
   const target = new Date(dateStr + "T00:00:00");
