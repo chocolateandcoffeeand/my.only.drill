@@ -230,8 +230,8 @@
   .enemy-row.near-defeat{border-color:var(--mint); background:var(--mint-soft);}
   .enemy-row.near-defeat .icon{display:inline-block; transform:rotate(180deg);}
   .enemy-row.near-defeat .state-tag{background:var(--mint-soft); color:var(--mint);}
-  .enemy-row.defeated{border-color:var(--mint); background:var(--mint-soft); cursor:default;}
-  .enemy-row .state-tag.defeated-tag{background:var(--mint-soft); color:var(--mint);}
+  .enemy-row.defeated{border-color:var(--border); background:var(--surface); cursor:default; opacity:0.6;}
+  .enemy-row .state-tag.defeated-tag{background:var(--surface-2); color:var(--text-faint);}
 
   .bonus-card{display:flex; align-items:center; gap:14px; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-lg); padding:16px 18px; cursor:pointer;}
   .bonus-card:active{transform:scale(0.98);}
@@ -1543,7 +1543,7 @@ function renderMiniGame(){
     <div style="display:flex; justify-content:space-between; margin-bottom:8px; font-family:var(--font-display); font-size:13px; color:var(--text-dim);">
       <span>LV <b id="gameLevel" style="color:var(--text);">${gs.level}</b></span>
       <span>SCORE <b id="gameScore" style="color:var(--text);">0</b></span>
-      <span>BEST <b style="color:var(--text);">${gs.bestScore}</b></span>
+      <span>GOAL <b style="color:var(--mint);">${levelUpScoreNeeded(gs.level)}</b></span>
       <span>TIME <b id="gameTime" style="color:var(--text);">45</b></span>
     </div>
     <canvas id="miniCanvas" width="480" height="360" style="width:100%; height:auto; border-radius:var(--radius-md); border:1px solid var(--border); touch-action:none; display:block; background:#0B0A16;"></canvas>
@@ -1588,7 +1588,7 @@ function updateHud(score, timeLeft){
   if(scoreEl) scoreEl.textContent = Math.round(score);
   if(timeEl) timeEl.textContent = Math.ceil(timeLeft);
 }
-function endMiniGame(finalScore){
+function endMiniGame(finalScore, early){
   if(!miniGameState || miniGameState.over) return;
   miniGameState.over = true;
   if(miniGameRAF) cancelAnimationFrame(miniGameRAF);
@@ -1607,7 +1607,9 @@ function endMiniGame(finalScore){
       <div class="callout" style="text-align:center; margin-top:16px;">
         ${leveledUp
           ? `<div class="c-title" style="font-size:18px; color:var(--mint);">🎉 LEVEL UP！ → Lv.${gs.level}</div>`
-          : `<div class="c-title" style="font-size:18px;">TIME UP</div>`}
+          : early
+            ? `<div class="c-title" style="font-size:18px; color:var(--mint);">🏆 CLEAR！</div>`
+            : `<div class="c-title" style="font-size:18px;">TIME UP</div>`}
         <div class="c-sub">スコア ${finalScore}（ベスト ${gs.bestScore}）</div>
         <div class="btn-row">
           <button class="btn btn-ghost" onclick="goto('gameSelect')">ゲーム一覧へ</button>
@@ -1691,6 +1693,9 @@ function invaderLoop(ts){
     if(s.aliens.length && s.aliens.every(a=> !a.alive)){
       s.score += 50;
       spawnAlienWave(level);
+    }
+    if(!s.over && s.score >= levelUpScoreNeeded(level)){
+      endMiniGame(Math.round(s.score), true);
     }
   }
 
@@ -1783,6 +1788,9 @@ function breakerLoop(ts){
       s.score += 50;
       const level = (db.miniGames.breaker && db.miniGames.breaker.level) || 1;
       spawnBricks(level);
+    }
+    if(!s.over && s.score >= levelUpScoreNeeded((db.miniGames.breaker && db.miniGames.breaker.level) || 1)){
+      endMiniGame(Math.round(s.score), true);
     }
   }
 
